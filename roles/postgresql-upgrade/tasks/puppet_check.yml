@@ -1,0 +1,8 @@
+- name: Get puppet agent lock file
+  stat:
+    path: '/var/lib/puppet/state/agent_disabled.lock'
+  register: puppet_state_result
+
+- name: Check if puppet agent is runned
+  fail: msg="puppet agent is disabled"
+  when: puppet_state_result.stat.exists == True

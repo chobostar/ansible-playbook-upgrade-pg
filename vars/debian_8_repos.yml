@@ -1,0 +1,2 @@
+apt_repos:
+  - "deb http://apt.postgresql.org/pub/repos/apt jessie-pgdg main"

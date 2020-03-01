@@ -1,0 +1,38 @@
+- name: Install new packages
+  apt:
+    name: '{{ postgresql_packages }}'
+    allow_unauthenticated: true
+    only_upgrade: yes
+    state: latest
+
+- name: informing about log checkpoint
+  debug:
+    msg: 'Next step is "CHECKPOINT" may take a time...'
+  when: operate is defined
+
+- name: manual checkpoint
+  shell: 'sudo -u {{ postgres_service_user }} psql -c "CHECKPOINT"'
+  async: 3600 # 1 hour
+  poll: 10
+  when: operate is defined
+
+- name: pause PgBouncers
+  command: 'psql -d pgbouncer -U {{ pgbouncer_service_user }} -p {{ item.port }} -c "PAUSE"'
+  become: yes
+  become_method: sudo
+  become_user: '{{ postgres_service_user }}'
+  with_items: '{{ pgbouncer_instances }}'
+  when:
+    - item.action == 'pause' and operate is defined
+
+- name: restart clusters
+  command: 'pg_ctlcluster {{ postgresql_version }} {{ item }} restart -m fast'
+  with_items: '{{ postgresql_cluster_names }}'
+  when: operate is defined
+
+- name: resume back PgBouncers
+  command: 'psql -d pgbouncer -U {{ pgbouncer_service_user }} -p {{ item.port }} -c "RESUME"'
+  become_user: '{{ postgres_service_user }}'
+  with_items: '{{ pgbouncer_instances }}'
+  when:
+    - item.action == 'pause' and operate is defined

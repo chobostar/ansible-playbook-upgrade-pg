@@ -1,0 +1,18 @@
+postgresql_upgrade_version_to: "9.6"
+
+postgresql_version: "9.4"
+postgresql_cluster_names:
+  - main
+postgresql_packages:
+  - 'postgresql-{{ postgresql_version }}'
+  - 'postgresql-{{ postgresql_version }}-dbg'
+  - 'postgresql-client-{{ postgresql_version }}'
+  - 'postgresql-contrib-{{ postgresql_version }}'
+  -
+postgresql_upgrade_packages:
+  - 'postgresql-{{ postgresql_upgrade_version_to }}'
+  - 'postgresql-{{ postgresql_upgrade_version_to }}-dbg'
+  - 'postgresql-client-{{ postgresql_upgrade_version_to }}'
+  - 'postgresql-contrib-{{ postgresql_upgrade_version_to }}'
+
+is_puppet_managed: false

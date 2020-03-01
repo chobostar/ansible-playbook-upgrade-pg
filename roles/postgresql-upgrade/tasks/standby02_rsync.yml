@@ -1,0 +1,49 @@
+- name: Remove standby02 directory if exists
+  file:
+    path: '{{ standby02_rsync_pgdata }}/{{ postgresql_upgrade_version_to }}/{{ postgresql_cluster_names[0] }}'
+    state: absent
+  delegate_to: '{{ standby02_hostname }}'
+
+- name: Rsync standby02 datadir
+  shell: >
+    cd /var/lib/postgresql;
+    sudo -u {{ postgres_service_user }} rsync -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    -v -i --archive --delete --hard-links --size-only
+    --exclude pg_xlog
+    {{ rsync_pgdata }}/{{ postgresql_version }} {{ rsync_pgdata }}/{{ postgresql_upgrade_version_to }}
+    {{ standby02_hostname }}:{{ standby02_rsync_pgdata }} 2>&1 | tee rsync_standby02.log
+  async: 1800 # 30 minutes
+  poll: 3
+  register: rsync_standby02_out
+  failed_when: rsync_standby02_out.stdout.find('rsync error:') != -1
+
+- name: Handle standby02 tablespace
+  block:
+  - name: Get standby02 old tablespace dir
+    shell: 'ls {{ standby02_tablespace_path }} | grep "PG_{{ postgresql_version }}"'
+    register: standby02_old_tablespace
+
+  - name: Get standby02 new tablespace dir
+    shell: 'ls {{ standby02_tablespace_path }} | grep "PG_{{ postgresql_upgrade_version_to }}"'
+    register: standby02_new_tablespace
+
+  - name: Remove standby02 new tablespace dir if exists
+    file:
+      path: '{{ standby02_tablespace_path }}/{{ standby02_new_tablespace.stdout }}'
+      state: absent
+    delegate_to: '{{ standby02_hostname }}'
+
+  - name: Rsync standby02 tablespaces
+    shell: >
+      cd /var/lib/postgresql;
+      sudo -u {{ postgres_service_user }} rsync -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+      -v -i --archive --delete --hard-links --size-only
+      --exclude pg_xlog
+      {{ standby02_tablespace_path }}/{{ standby02_old_tablespace.stdout }} {{ standby02_tablespace_path }}/{{ standby02_new_tablespace.stdout }}
+      {{ standby02_hostname }}:{{ standby02_tablespace_path }} 2>&1 | tee rsync_standby02_ts.log
+    async: 1800 # 30 minutes
+    poll: 3
+    register: rsync_standby02_ts_out
+    failed_when: rsync_standby02_ts_out.stdout.find('rsync error:') != -1
+
+  when: standby02_tablespace_path is defined

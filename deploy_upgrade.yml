@@ -1,0 +1,12 @@
+---
+- name: Deploy postgresql upgrade
+  become: true
+  gather_facts: true
+  remote_user: kspetrov
+  no_log: false
+  strategy: free
+  roles:
+  - update-preparer
+  - postgresql-upgrade
+  hosts:
+  - pgsql00

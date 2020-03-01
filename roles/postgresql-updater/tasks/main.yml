@@ -1,0 +1,4 @@
+- include: check.yml
+
+- include: operate.yml
+  when: postgresql_need_update is defined and postgresql_need_update.changed == true

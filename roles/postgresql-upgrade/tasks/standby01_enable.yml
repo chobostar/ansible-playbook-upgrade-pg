@@ -1,0 +1,25 @@
+- name: Create on standby01 symlink to recovery.conf
+  file:
+    src: '/etc/postgresql/{{ postgresql_upgrade_version_to }}/{{ postgresql_cluster_names[0] }}/recovery.conf'
+    dest: '/var/lib/postgresql/{{ postgresql_upgrade_version_to }}/{{ postgresql_cluster_names[0] }}/recovery.conf'
+    owner: '{{ postgres_service_user }}'
+    group: '{{ postgres_service_user }}'
+    state: link
+  delegate_to: '{{ standby01_hostname }}'
+
+- name: Create standby01 pg_xlog directories
+  file:
+    path: /var/lib/postgresql/{{ postgresql_upgrade_version_to }}/{{ postgresql_cluster_names[0] }}/pg_xlog/archive_status
+    owner: '{{ postgres_service_user }}'
+    group: '{{ postgres_service_user }}'
+    mode: 0700
+    recurse: yes
+    state: directory
+  delegate_to: '{{ standby01_hostname }}'
+
+- name: Start standby01
+  shell: 'pg_ctlcluster {{ postgresql_upgrade_version_to }} {{ item }} start'
+  async: 300 # 5 minutes
+  poll: 2
+  with_items: '{{ postgresql_cluster_names }}'
+  delegate_to: '{{ standby01_hostname }}'

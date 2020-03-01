@@ -1,0 +1,316 @@
+- name: Install new packages
+  apt:
+    name: '{{ postgresql_upgrade_packages }}'
+    allow_unauthenticated: true
+    state: latest
+
+- name: Drop existing version_to cluster
+  shell: 'pg_dropcluster {{ postgresql_upgrade_version_to }} {{ item }}'
+  ignore_errors: yes
+  with_items: '{{ postgresql_cluster_names }}'
+  when: operate is defined
+
+- name: Create new clusters with ru_RU.UTF-8
+  shell: 'pg_createcluster --locale=ru_RU.UTF-8 --encoding=UTF-8 {{ postgresql_upgrade_version_to }} {{ item }}'
+  with_items: '{{ postgresql_cluster_names }}'
+  when: operate is defined
+
+- name: Fix port for testing * to 5432
+  shell: 'sed -i -e "s/^port = \([0-9]\+\)/port = 5432/g" /etc/postgresql/{{ postgresql_upgrade_version_to }}/{{ item }}/postgresql.conf'
+  with_items: '{{ postgresql_cluster_names }}'
+  when:
+    - operate is defined
+    - is_testing is defined and is_testing == true
+
+- include: puppet_run_and_disable.yml
+  when:
+    - operate is defined
+    - is_puppet_managed == true
+
+- name: Check if config exists in new cluster directory
+  stat:
+    path: '/etc/postgresql/{{ postgresql_upgrade_version_to }}/{{ item }}/postgresql.conf'
+  loop: '{{ postgresql_cluster_names }}'
+  register: postgresql_conf_file
+  when: operate is defined
+
+- name: Fail if config is not exists
+  fail: msg="New PostgreSQL config doesn't exist"
+  when:
+    - operate is defined
+    - item.stat.exists == False
+  loop: '{{ postgresql_conf_file.results }}'
+
+- name: manual checkpoint
+  shell: 'sudo -u {{ postgres_service_user }} psql -c "CHECKPOINT"'
+  async: 1500 # 25 minutes
+  poll: 5
+  when: operate is defined
+
+- name: Save pg_controldata output for old clusters
+  shell: '/usr/lib/postgresql/{{ postgresql_version }}/bin/pg_controldata /var/lib/postgresql/{{ postgresql_version }}/{{ item }}/ | tee -a /tmp/pg_controldata_{{ postgresql_version }}_{{ item }}.log'
+  become: yes
+  become_user: '{{ postgres_service_user }}'
+  with_items: '{{ postgresql_cluster_names }}'
+  when: operate is defined
+
+# remove synchronous_standby_names
+- shell: 'sed -i -e "s/^synchronous_standby_names/#synchronous_standby_names/g" /etc/postgresql/{{ postgresql_upgrade_version_to }}/{{ item }}/postgresql.conf'
+  with_items: '{{ postgresql_cluster_names }}'
+  when:
+  - operate is defined
+  - remove_synchronous_commit is defined and remove_synchronous_commit == true
+
+- name: Test dry-run before stopping
+  shell: >
+    cd /var/lib/postgresql;
+    /usr/lib/postgresql/{{ postgresql_upgrade_version_to }}/bin/pg_upgrade --check --link
+    --old-bindir /usr/lib/postgresql/{{ postgresql_version }}/bin
+    --new-bindir /usr/lib/postgresql/{{ postgresql_upgrade_version_to }}/bin
+    --old-datadir /var/lib/postgresql/{{ postgresql_version }}/{{ item }}/
+    --new-datadir /var/lib/postgresql/{{ postgresql_upgrade_version_to }}/{{ item }}/
+    --old-options "-c config_file=/etc/postgresql/{{ postgresql_version }}/{{ item }}/postgresql.conf"
+    --new-options "-c config_file=/etc/postgresql/{{ postgresql_upgrade_version_to }}/{{ item }}/postgresql.conf" | tee -a /tmp/upgrade_{{ item }}.log
+  become: yes
+  become_user: '{{ postgres_service_user }}'
+  register: pg_upgrade_output
+  with_items: '{{ postgresql_cluster_names }}'
+  when: operate is defined
+
+- name: Check if clusters are compatible
+  fail: msg='pg_upgrade check is failed'
+  with_items: '{{ pg_upgrade_output.results }}'
+  when: operate is defined and item.stdout.find('*Clusters are compatible*') == -1
+
+- name: Save custom statistics values, then reset to default
+  shell:
+    cmd: |
+      DBS="$(sudo -u {{ postgres_service_user }} psql -At -X -c "select datname from pg_database WHERE datallowconn")"
+      for datname in $DBS; do
+        sudo -u {{ postgres_service_user }} psql -d "${datname}" -qAX -f - << 'EOF'
+           DROP TABLE IF EXISTS _tmp_custom_targets;
+           CREATE TABLE _tmp_custom_targets AS SELECT attrelid, attname, attnum, attstattarget FROM pg_attribute WHERE attstattarget > 0;
+           UPDATE pg_attribute SET attstattarget = -1 WHERE attstattarget > 0;
+      EOF
+      done;
+  args:
+    executable: /bin/bash
+  when: operate is defined
+
+- name: Stop clusters
+  shell: 'pg_ctlcluster -m fast {{ postgresql_version }} {{ item }} stop'
+  async: 900 # 15 minutes
+  poll: 10
+  with_items: '{{ postgresql_cluster_names }}'
+  when: operate is defined
+
+- name: Wait until cluster stops
+  shell: ps ax | grep '[b]in/postgres' -c | cat
+  retries: 500 # 25 minutes
+  delay: 3
+  register: result
+  until: result.stdout == "0"
+  when: operate is defined
+
+- include: standby01_replay_and_stop.yml
+  when:
+    - standby01_hostname is defined
+    - operate is defined
+
+- include: standby02_replay_and_stop.yml
+  when:
+    - standby02_hostname is defined
+    - operate is defined
+
+- name: Stop PgBouncers
+  command: '/etc/init.d/{{ item.name }} stop'
+  with_items: '{{ pgbouncer_instances }}'
+  when:
+    - operate is defined
+    - pgbouncer_instances is defined and pgbouncer_instances|length > 0
+
+- name: Close traffic
+  shell: 'iptables -I INPUT -p tcp --dport {{ item }} -j REJECT'
+  with_items:
+    - '{{ postgresql_port }}'
+    - '{{ pgbouncer_instances | map(attribute="port") | list }}'
+  when: operate is defined
+
+- name: Test dry-run after stopping
+  shell: >
+    cd /var/lib/postgresql;
+    /usr/lib/postgresql/{{ postgresql_upgrade_version_to }}/bin/pg_upgrade --check --link
+    --old-bindir /usr/lib/postgresql/{{ postgresql_version }}/bin
+    --new-bindir /usr/lib/postgresql/{{ postgresql_upgrade_version_to }}/bin
+    --old-datadir /var/lib/postgresql/{{ postgresql_version }}/{{ item }}/
+    --new-datadir /var/lib/postgresql/{{ postgresql_upgrade_version_to }}/{{ item }}/
+    --old-options "-c config_file=/etc/postgresql/{{ postgresql_version }}/{{ item }}/postgresql.conf"
+    --new-options "-c config_file=/etc/postgresql/{{ postgresql_upgrade_version_to }}/{{ item }}/postgresql.conf" | tee -a /tmp/upgrade_{{ item }}.log
+  become: yes
+  become_user: '{{ postgres_service_user }}'
+  register: pg_upgrade_output
+  with_items: '{{ postgresql_cluster_names }}'
+  when: operate is defined
+
+- name: Check if clusters are compatible
+  fail: msg='pg_upgrade check is failed'
+  with_items: '{{ pg_upgrade_output.results }}'
+  when: operate is defined and item.stdout.find('*Clusters are compatible*') == -1
+
+- name: Upgrade clusters
+  shell: >
+    cd /var/lib/postgresql;
+    sudo -u {{ postgres_service_user }} /usr/lib/postgresql/{{ postgresql_upgrade_version_to }}/bin/pg_upgrade --link
+    --old-bindir /usr/lib/postgresql/{{ postgresql_version }}/bin
+    --new-bindir /usr/lib/postgresql/{{ postgresql_upgrade_version_to }}/bin
+    --old-datadir /var/lib/postgresql/{{ postgresql_version }}/{{ item }}/
+    --new-datadir /var/lib/postgresql/{{ postgresql_upgrade_version_to }}/{{ item }}/
+    --old-options "-c config_file=/etc/postgresql/{{ postgresql_version }}/{{ item }}/postgresql.conf"
+    --new-options "-c config_file=/etc/postgresql/{{ postgresql_upgrade_version_to }}/{{ item }}/postgresql.conf" | tee -a /tmp/upgrade_{{ item }}.log
+  async: 1800 # 30 minutes
+  poll: 10
+  with_items: '{{ postgresql_cluster_names }}'
+  register: pg_upgrade_real_output
+  when: operate is defined
+
+- name: Check if clusters are upgraded
+  fail: msg='pg_upgrade check is failed'
+  with_items: '{{ pg_upgrade_real_output.results }}'
+  when: operate is defined and item.stdout.find('Upgrade Complete') == -1
+
+- include: standby01_rsync.yml
+  when:
+    - standby01_hostname is defined
+    - operate is defined
+
+- include: standby02_rsync.yml
+  when:
+    - standby02_hostname is defined
+    - operate is defined
+
+- name: Start clusters of new version
+  shell: 'pg_ctlcluster {{ postgresql_upgrade_version_to }} {{ item }} start'
+  async: 300 # 5 minutes
+  poll: 2
+  with_items: '{{ postgresql_cluster_names }}'
+  when: operate is defined
+
+- name: Wait the connection status of cluster
+  shell: 'pg_isready'
+  retries: 600 # 30 minutes
+  delay: 3
+  register: result_pg_is_ready
+  until: result_pg_is_ready.rc == 0
+  when: operate is defined
+
+- include: standby01_enable.yml
+  when:
+  - standby01_hostname is defined
+  - operate is defined
+
+- include: standby02_enable.yml
+  when:
+    - standby02_hostname is defined
+    - operate is defined
+
+- name: Update extensions
+  shell: |
+    DBS="$(sudo -u {{ postgres_service_user }} psql -At -X -c "select datname from pg_database where not datistemplate")"
+    for datname in $DBS; do
+        EXTS="$(sudo -u {{ postgres_service_user }} psql -At -X -d "${datname}" -c "select extname from pg_extension")"
+        for extname in $EXTS; do
+            sudo -u {{ postgres_service_user }} psql -d "${datname}" -c "alter extension \"${extname}\" update;"
+        done
+    done
+  args:
+    executable: /bin/bash
+  when: operate is defined
+
+- name: Analyze in stages
+  block:
+    - name: Prevent autovacuum prevent
+      poll: 0
+      shell:
+        cmd: |
+          nohup bash -c 'while true; do psql -At -X -c "select pg_cancel_backend(pid) from pg_stat_activity where query like '\''autovacuum: %'\'' and pid != pg_backend_pid();" postgres; sleep 2; done'  </dev/null >/dev/null 2>&1 &
+          echo $!;
+      args:
+          executable: /bin/bash
+      register: stage1_2
+      become: yes
+      become_user: '{{ postgres_service_user }}'
+
+    - name: Analyze in stages. Stage 1. Set default to 1.
+      shell: 'psql -qc "ALTER SYSTEM SET default_statistics_target = 1" -qc "SELECT pg_reload_conf()"'
+      become: yes
+      become_user: '{{ postgres_service_user }}'
+
+    - name: Analyze in stages. Stage 1. Analyze on 1.
+      shell: 'sudo -u {{ postgres_service_user }} /usr/lib/postgresql/{{ postgresql_upgrade_version_to }}/bin/vacuumdb --all --analyze-only --jobs {{ analyze_parallel_jobs }}'
+      async: 600 # 10 minutes
+      poll: 5
+
+    - name: Analyze in stages. Stage 2. Set default to 10.
+      shell: 'psql -qc "ALTER SYSTEM SET default_statistics_target = 10" -qc "SELECT pg_reload_conf()"'
+      become: yes
+      become_user: '{{ postgres_service_user }}'
+
+    - name: Analyze in stages. Stage 2. Analyze on 10.
+      shell: 'sudo -u {{ postgres_service_user }} /usr/lib/postgresql/{{ postgresql_upgrade_version_to }}/bin/vacuumdb --all --analyze-only --jobs {{ analyze_parallel_jobs }}'
+      async: 1200 # 20 minutes
+      poll: 5
+  always:
+    - name: Kill process
+      shell: "ps {{ stage1_2.stdout|int }} | grep -q 'pg_cancel_backend' && kill {{ stage1_2.stdout|int }}"
+      ignore_errors: true
+  when: operate is defined
+
+- name: Restore custom statistics values
+  shell:
+    cmd: |
+      DBS="$(sudo -u {{ postgres_service_user }} psql -At -X -c "select datname from pg_database WHERE datallowconn")"
+      for datname in $DBS; do
+        sudo -u {{ postgres_service_user }} psql -d "${datname}" -qAX -f- << 'EOF'
+          UPDATE pg_attribute a SET attstattarget = c.attstattarget
+          FROM _tmp_custom_targets c WHERE a.attrelid = c.attrelid
+          AND a.attnum = c.attnum AND a.attname = c.attname;
+          DROP TABLE IF EXISTS _tmp_custom_targets;
+      EOF
+      done;
+  args:
+    executable: /bin/bash
+  when: operate is defined
+
+# Puppet стартует pgbouncer-ы
+- include: puppet_enable_and_run.yml
+  when:
+    - is_puppet_managed == true
+    - operate is defined
+
+- name: Open traffic
+  shell: 'iptables -F INPUT'
+  when: operate is defined
+
+- name: Analyze in stages. Stage 3. Set default to full.
+  shell: 'psql -qc "ALTER SYSTEM RESET default_statistics_target" -qc "SELECT pg_reload_conf()"'
+  become: yes
+  become_user: '{{ postgres_service_user }}'
+  when: operate is defined
+
+- name: Analyze in stages. Stage 3. Analyze on full.
+  shell: 'sudo -u {{ postgres_service_user }} /usr/lib/postgresql/{{ postgresql_upgrade_version_to }}/bin/vacuumdb --all --analyze-only --jobs {{ analyze_parallel_jobs }}'
+  async: 48000 # 8 hours
+  poll: 0
+  when: operate is defined
+
+- name: Delete old cluster files
+  shell: 'rm -r /var/lib/postgresql/{{ postgresql_version }}/{{ item }}'
+  ignore_errors: yes
+  with_items: '{{ postgresql_cluster_names }}'
+  when: operate is defined
+
+- name: Drop old cluster
+  shell: 'pg_dropcluster {{ postgresql_version }} {{ item }}'
+  ignore_errors: yes
+  with_items: '{{ postgresql_cluster_names }}'
+  when: operate is defined

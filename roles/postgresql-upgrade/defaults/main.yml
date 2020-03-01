@@ -1,0 +1,24 @@
+postgres_service_user: postgres
+pgbouncer_service_user: pgbouncer
+
+postgresql_port: 5432
+postgresql_upgrade_version_to: "9.6"
+
+postgresql_packages:
+- 'postgresql-{{ postgresql_upgrade_version_to }}'
+- 'postgresql-{{ postgresql_upgrade_version_to }}-dbg'
+- 'postgresql-client-{{ postgresql_upgrade_version_to }}'
+- 'postgresql-contrib-{{ postgresql_upgrade_version_to }}'
+
+postgresql_upgrade_packages:
+  - 'postgresql-{{ postgresql_upgrade_version_to }}'
+  - 'postgresql-{{ postgresql_upgrade_version_to }}-dbg'
+  - 'postgresql-client-{{ postgresql_upgrade_version_to }}'
+  - 'postgresql-contrib-{{ postgresql_upgrade_version_to }}'
+
+pgbouncer_instances: []
+analyze_parallel_jobs: 8
+
+is_puppet_managed: true
+is_testing: true
+remove_synchronous_commit: true

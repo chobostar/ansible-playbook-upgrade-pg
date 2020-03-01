@@ -1,0 +1,3 @@
+- include: check.yml
+
+- include: operate.yml

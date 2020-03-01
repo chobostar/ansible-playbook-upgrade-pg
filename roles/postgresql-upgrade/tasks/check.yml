@@ -1,0 +1,16 @@
+- name: Check if cluster of defined version exists and runs
+  shell: 'pg_lsclusters --no-header | grep -q "{{ postgresql_version }}\s\+{{ item }}\s\+[^o]\+online"'
+  with_items: '{{ postgresql_cluster_names }}'
+
+- name: Check if new version == old version
+  fail: msg="versions are the same"
+  when: postgresql_upgrade_version_to == postgresql_version
+
+- include: puppet_check.yml
+  when: is_puppet_managed
+
+- include: standby01_check.yml
+  when: standby01_hostname is defined
+
+- include: standby02_check.yml
+  when: standby02_hostname is defined

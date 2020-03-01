@@ -1,0 +1,9 @@
+- name: Run puppet
+  shell: 'puppet agent -t'
+  ignore_errors: yes
+  when: operate is defined
+
+- name: Disable puppet
+  shell: 'puppet-disable "pg_upgrade" "2 hours"'
+  ignore_errors: yes
+  when: operate is defined

@@ -1,0 +1,35 @@
+- name: Register master checkpoint location
+  shell: '/usr/lib/postgresql/{{ postgresql_version }}/bin/pg_controldata /var/lib/postgresql/{{ postgresql_version }}/{{ postgresql_cluster_names[0] }}/ | grep ''Latest checkpoint location'''
+  become: yes
+  become_user: '{{ postgres_service_user }}'
+  register: master_checkpoint
+
+### Handle standby01
+
+- name: Wait until standby01 is synced
+  shell: 'psql -qt -c "select pg_last_xlog_receive_location() = pg_last_xlog_replay_location()" | grep -q "t"'
+  become: yes
+  become_user: '{{ postgres_service_user }}'
+  retries: 600 # 10 minutes
+  delay: 1
+  register: standby01_sync
+  until: standby01_sync.rc == 0
+  delegate_to: '{{ standby01_hostname }}'
+
+- name: Stop standby01
+  shell: 'pg_ctlcluster -m fast {{ postgresql_version }} {{ postgresql_cluster_names[0] }} stop'
+  async: 600 # 10 minutes
+  poll: 3
+  delegate_to: '{{ standby01_hostname }}'
+
+- name: Register standby01 checkpoint location
+  shell: '/usr/lib/postgresql/{{ postgresql_version }}/bin/pg_controldata /var/lib/postgresql/{{ postgresql_version }}/{{ postgresql_cluster_names[0] }}/ | grep ''Latest checkpoint location'''
+  become: yes
+  become_user: '{{ postgres_service_user }}'
+  delegate_to: '{{ standby01_hostname }}'
+  register: standby01_checkpoint
+
+- name: Compare checkpoint location standby01
+  fail:
+    msg: standby01 checkpoint location is mismatch
+  when: master_checkpoint.stdout != standby01_checkpoint.stdout

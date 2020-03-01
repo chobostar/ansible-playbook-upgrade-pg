@@ -1,0 +1,7 @@
+- name: Enable puppet
+  shell: 'puppet-enable'
+  ignore_errors: yes
+
+- name: Start puppet
+  shell: 'puppet agent -t'
+  ignore_errors: yes

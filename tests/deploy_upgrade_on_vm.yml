@@ -1,0 +1,14 @@
+---
+- name: Deploy postgresql upgrade on VM
+  become: true
+  gather_facts: true
+  remote_user: vagrant
+  no_log: false
+  strategy: free
+  vars_files:
+    - vars/postgresql.yml
+  roles:
+    - ../roles/update-preparer
+    - ../roles/postgresql-upgrade
+  hosts:
+  - 172.30.1.5

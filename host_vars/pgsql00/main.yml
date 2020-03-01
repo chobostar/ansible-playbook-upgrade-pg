@@ -1,0 +1,44 @@
+postgresql_version: "9.4"
+postgresql_cluster_names:
+- main
+
+postgresql_upgrade_version_to: "9.6"
+
+postgresql_packages:
+- 'postgresql-{{ postgresql_version }}'
+- 'postgresql-{{ postgresql_version }}-dbg'
+- 'postgresql-client-{{ postgresql_version }}'
+- 'postgresql-contrib-{{ postgresql_version }}'
+- 'postgresql-plperl-{{ postgresql_version }}'
+- 'postgresql-plpython-{{ postgresql_version }}'
+
+postgresql_upgrade_packages:
+- 'postgresql-{{ postgresql_upgrade_version_to }}'
+- 'postgresql-{{ postgresql_upgrade_version_to }}-dbg'
+- 'postgresql-client-{{ postgresql_upgrade_version_to }}'
+- 'postgresql-contrib-{{ postgresql_upgrade_version_to }}'
+- 'postgresql-plperl-{{ postgresql_upgrade_version_to }}'
+- 'postgresql-plpython-{{ postgresql_upgrade_version_to }}'
+
+pgbouncer_instances:
+- { name: pgbouncer-dev, action: stop, port: 6404 }
+- { name: pgbouncer-server01, action: pause, port: 6432 }
+- { name: pgbouncer-server02, action: pause, port: 6431 }
+- { name: pgbouncer-xrpc, action: pause, port: 6433 }
+- { name: pgbouncer-k8s-dev, action: pause, port: 6532 }
+
+is_puppet_managed: true
+is_disable_alerts: true
+is_testing: false
+remove_synchronous_commit: false
+
+#нужно явно указывать, для гибкости с rsync
+rsync_pgdata: /var/lib/postgresql
+
+standby01_hostname: pgsql01
+standby01_rsync_pgdata: /data/pg_data
+standby01_tablespace_path: /lib/init/rw/pg_memspace
+
+standby02_hostname: pgsql02
+standby02_rsync_pgdata: /var/lib/postgresql
+standby02_tablespace_path: /lib/init/rw/pg_memspace

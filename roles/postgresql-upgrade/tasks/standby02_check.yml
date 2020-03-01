@@ -1,0 +1,101 @@
+- name: Store ip address of standby02
+  shell: 'ping -q -c1 -t1 {{ standby02_hostname }} | grep -Eo "([0-9]+\.?){4}" | head -1'
+  register: standby02_ip
+
+- name: Get standby02 replication lag
+  shell: 'psql -qt -c "select pg_xlog_location_diff(sent_location, replay_location) < 16*1024*1024 from pg_stat_replication where client_addr=''{{ standby02_ip.stdout }}''" | grep -q "t"'
+  become: true
+  become_user: '{{ postgres_service_user }}'
+  register: standby02_check
+
+- name: Check standby02 replication lag
+  fail:
+    msg: 'Something wrong with standby02 replication'
+  when: standby02_check.rc != 0
+
+- name: Get standby02 ssh state
+  shell: 'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {{ standby02_hostname }} "whoami"'
+  become: yes
+  become_user: '{{ postgres_service_user }}'
+  register: standby02_ssh_out
+
+- name: Check is standby02 ssh connection available
+  fail:
+    msg: 'SSH connection to {{ standby02_hostname }} is not available'
+  when: standby02_ssh_out.rc != 0
+
+- name: Get standby02 version directory state
+  stat:
+    path: '{{ standby02_rsync_pgdata }}/{{ postgresql_upgrade_version_to }}'
+  delegate_to: '{{ standby02_hostname }}'
+  register: standby02_version_directory_state
+
+- name: standby02 version directory should exists
+  fail:
+    msg: 'Standby version directory should exists!'
+  when: standby02_version_directory_state.stat.exists != True
+
+- name: Get standby02 pgdata directory state
+  stat:
+    path: '{{ standby02_rsync_pgdata }}/{{ postgresql_upgrade_version_to }}/{{ postgresql_cluster_names[0] }}'
+  delegate_to: '{{ standby02_hostname }}'
+  register: standby02_pgdata_state
+
+- name: standby02 pgdata directory should not exists
+  fail:
+    msg: 'Standby directory should not exists!'
+  when: standby02_pgdata_state.stat.exists == True
+
+- name: Symlinks checkss
+  block:
+  - name: Get standby02 old version directory state
+    stat:
+      path: '{{ standby02_rsync_pgdata }}/{{ postgresql_version }}'
+    delegate_to: '{{ standby02_hostname }}'
+    register: standby02_old_version_directory_state
+
+  - fail:
+      msg: There should be no symlinks
+    when: standby02_old_version_directory_state.stat.islnk == True or
+      standby02_version_directory_state.stat.islnk == True
+
+- name: Check tablespaces
+  block:
+  - name: Get local tablespace directory state
+    stat:
+      path: '{{ standby02_tablespace_path }}'
+    register: local_ts_standby02_state
+
+  - name: Check if local tablespace is exist, has correct owner and mode
+    fail:
+      msg: 'tablespace directory {{ standby02_tablespace_path }} is not exists, has not {{ postgres_service_user }} as owner or mode'
+    when: (local_ts_standby02_state.stat.isdir is not defined) or
+      (local_ts_standby02_state.stat.isdir != True) or
+      (local_ts_standby02_state.stat.pw_name != postgres_service_user) or
+      (local_ts_standby02_state.stat.wusr != True)
+
+  - name: Get standby02 tablespace directory state
+    stat:
+      path: '{{ standby02_tablespace_path }}'
+    delegate_to: '{{ standby02_hostname }}'
+    register: standby02_tablespace_path_state
+
+  - name: Check if standby02 tablespace is exist, has correct owner and mode
+    fail:
+      msg: 'tablespace directory {{ standby02_tablespace_path }} is not exists, has not {{ postgres_service_user }} as owner or mode'
+    when: (standby02_tablespace_path_state.stat.isdir is not defined) or
+      (standby02_tablespace_path_state.stat.isdir != True) or
+      (standby02_tablespace_path_state.stat.pw_name != postgres_service_user) or
+      (standby02_tablespace_path_state.stat.wusr != True)
+  when: standby02_tablespace_path is defined
+
+- name: Get standby02 new recovery.conf state
+  stat:
+    path: '/etc/postgresql/{{ postgresql_upgrade_version_to }}/{{ postgresql_cluster_names[0] }}/recovery.conf'
+  delegate_to: '{{ standby02_hostname }}'
+  register: standby02_recovery_conf_state
+
+- name: Check standby02 recovery.conf is exists
+  fail:
+    msg: 'standby02 recovery.conf is wrong'
+  when: standby02_recovery_conf_state.stat.exists != True

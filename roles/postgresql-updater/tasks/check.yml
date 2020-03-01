@@ -1,0 +1,11 @@
+- name: Check if cluster of defined version exists
+  shell: 'pg_lsclusters -h | grep -q "{{ postgresql_version }}\s\+{{ item }}\s\+"'
+  with_items: '{{ postgresql_cluster_names }}'
+
+- name: Check if new version is exists
+  apt:
+    name: 'postgresql-{{ postgresql_version }}'
+    only_upgrade: yes
+    state: latest
+  check_mode: yes
+  register: postgresql_need_update
